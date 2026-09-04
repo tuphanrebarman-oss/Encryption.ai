@@ -679,6 +679,7 @@ button:hover{
 
 
             <button
+                id="importJSONBtn"
                 class="primary full"
                 onclick="openJSONPicker()"
             >
@@ -784,6 +785,36 @@ button:hover{
                 id="dataset"
                 class="dataset"
             ></div>
+
+
+            <div
+                id="datasetPager"
+                class="button-row"
+                style="margin-top:10px;display:none;align-items:center;justify-content:space-between;gap:8px"
+            >
+
+                <button
+                    id="pagerPrev"
+                    class="secondary"
+                    onclick="pagerGoPrev()"
+                >
+                    ◀ Prev
+                </button>
+
+                <span
+                    id="pagerInfo"
+                    style="font-size:12px;opacity:0.8;text-align:center"
+                ></span>
+
+                <button
+                    id="pagerNext"
+                    class="secondary"
+                    onclick="pagerGoNext()"
+                >
+                    Next ▶
+                </button>
+
+            </div>
 
 
             <div
@@ -936,6 +967,8 @@ FINAL BINARY:
 const MAGIC = new TextEncoder().encode("TBAI1");
 
 let dataset = [];
+let currentPage = 0;
+const PAGE_SIZE = 50;
 
 
 /* =========================================================
@@ -1184,6 +1217,105 @@ function addItem(){
    IMPORT JSON
 ========================================================= */
 
+function setImportButtonBusy(isBusy, label){
+
+    const btn =
+        document.getElementById(
+            "importJSONBtn"
+        );
+
+    if(!btn){
+
+        return;
+
+    }
+
+    btn.disabled = isBusy;
+
+    btn.textContent =
+        isBusy
+            ? (label || "⏳ Import হচ্ছে...")
+            : "📂 Import JSON Dataset";
+}
+
+
+/*
+   বড় (100-200MB+) JSON ফাইল parse এবং
+   validate করার কাজ একটি Web Worker-এ
+   করা হয়, যাতে main UI thread ব্লক না হয়
+   এবং পেজ "atke" / "Not Responding" না হয়ে যায়।
+*/
+
+function createJSONImportWorker(){
+
+    const workerSource = `
+        self.onmessage = function(e){
+
+            try{
+
+                const text = e.data;
+
+                const parsed = JSON.parse(text);
+
+                if(!Array.isArray(parsed)){
+                    self.postMessage({
+                        error: "JSON-এর root অবশ্যই Array হতে হবে।"
+                    });
+                    return;
+                }
+
+                const total = parsed.length;
+                const imported = [];
+                const PROGRESS_STEP = 10000;
+
+                for(let i = 0; i < total; i++){
+
+                    const item = parsed[i];
+
+                    if(typeof item !== "object" || item === null){
+                        continue;
+                    }
+
+                    const question =
+                        typeof item.question === "string"
+                            ? item.question.trim()
+                            : "";
+
+                    const answer =
+                        typeof item.answer === "string"
+                            ? item.answer.trim()
+                            : "";
+
+                    if(question && answer){
+                        imported.push({ question: question, answer: answer });
+                    }
+
+                    if(i % PROGRESS_STEP === 0){
+                        self.postMessage({ progress: i, total: total });
+                    }
+                }
+
+                self.postMessage({ done: true, imported: imported, total: total });
+
+            }
+            catch(err){
+                self.postMessage({ error: err.message });
+            }
+        };
+    `;
+
+    const blob =
+        new Blob(
+            [workerSource],
+            { type: "application/javascript" }
+        );
+
+    return new Worker(
+        URL.createObjectURL(blob)
+    );
+}
+
+
 async function importJSON(event){
 
     const file =
@@ -1195,106 +1327,123 @@ async function importJSON(event){
 
     }
 
+    const sizeMB =
+        (file.size / (1024 * 1024)).toFixed(1);
+
+    setImportButtonBusy(
+        true,
+        "📖 ফাইল পড়া হচ্ছে..."
+    );
+
+    showStatus(
+        "ফাইল পড়া হচ্ছে... (" + sizeMB + " MB)। বড় ফাইলে কিছুক্ষণ সময় লাগতে পারে, পেজ বন্ধ করবেন না।",
+        true
+    );
+
+    let worker;
 
     try{
+
+        /*
+        ফাইল টেক্সট হিসেবে পড়া (async,
+        UI ব্লক করে না)
+        */
 
         const text =
             await file.text();
 
-
-        const parsed =
-            JSON.parse(text);
-
-
-        if(!Array.isArray(parsed)){
-
-            throw new Error(
-                "JSON-এর root অবশ্যই Array হতে হবে।"
-            );
-
-        }
-
-
-        const imported = [];
-
-
-        for(
-            let i = 0;
-            i < parsed.length;
-            i++
-        ){
-
-            const item =
-                parsed[i];
-
-
-            if(
-                typeof item !== "object" ||
-                item === null
-            ){
-
-                continue;
-
-            }
-
-
-            const question =
-                typeof item.question === "string"
-                    ? item.question.trim()
-                    : "";
-
-
-            const answer =
-                typeof item.answer === "string"
-                    ? item.answer.trim()
-                    : "";
-
-
-            if(
-                question &&
-                answer
-            ){
-
-                imported.push({
-
-                    question: question,
-
-                    answer: answer
-
-                });
-
-            }
-
-        }
-
-
-        if(imported.length === 0){
-
-            throw new Error(
-                "Valid question/answer পাওয়া যায়নি।"
-            );
-
-        }
-
-
-        /*
-        Existing data-এর সাথে merge
-        */
-
-        dataset =
-            dataset.concat(
-                imported
-            );
-
-
-        renderDataset();
-
-
-        showStatus(
-            imported.length +
-            "টি Q&A JSON থেকে import হয়েছে।",
-            true
+        setImportButtonBusy(
+            true,
+            "⚙️ Processing..."
         );
+
+        worker =
+            createJSONImportWorker();
+
+        worker.onmessage = function(e){
+
+            const data = e.data;
+
+            if(data.error){
+
+                showStatus(
+                    "JSON Import ব্যর্থ: " +
+                    data.error,
+                    false
+                );
+
+                setImportButtonBusy(false);
+                worker.terminate();
+                return;
+            }
+
+            if(data.progress !== undefined){
+
+                showStatus(
+                    "⚙️ Processing... " +
+                    data.progress.toLocaleString() +
+                    " / " +
+                    data.total.toLocaleString(),
+                    true
+                );
+
+                return;
+            }
+
+            if(data.done){
+
+                if(data.imported.length === 0){
+
+                    showStatus(
+                        "Valid question/answer পাওয়া যায়নি।",
+                        false
+                    );
+
+                    setImportButtonBusy(false);
+                    worker.terminate();
+                    return;
+                }
+
+                /*
+                Existing data-এর সাথে merge
+                */
+
+                dataset =
+                    dataset.concat(
+                        data.imported
+                    );
+
+                currentPage = 0;
+
+                renderDataset();
+
+                showStatus(
+                    data.imported.length.toLocaleString() +
+                    "টি Q&A JSON থেকে import হয়েছে।",
+                    true
+                );
+
+                setImportButtonBusy(false);
+                worker.terminate();
+            }
+        };
+
+        worker.onerror = function(err){
+
+            showStatus(
+                "JSON Import ব্যর্থ: " +
+                (err.message || "Worker error"),
+                false
+            );
+
+            setImportButtonBusy(false);
+
+            if(worker){
+                worker.terminate();
+            }
+        };
+
+        worker.postMessage(text);
 
     }
     catch(error){
@@ -1305,6 +1454,11 @@ async function importJSON(event){
             false
         );
 
+        setImportButtonBusy(false);
+
+        if(worker){
+            worker.terminate();
+        }
     }
 
 
@@ -1343,8 +1497,14 @@ function renderDataset(){
         );
 
 
+    const pager =
+        document.getElementById(
+            "datasetPager"
+        );
+
+
     badge.textContent =
-        dataset.length +
+        dataset.length.toLocaleString() +
         " items";
 
 
@@ -1357,63 +1517,189 @@ function renderDataset(){
             </div>
         `;
 
+        if(pager){
+            pager.style.display = "none";
+        }
+
         return;
     }
 
 
+    /*
+    বিশাল dataset (লক্ষ লক্ষ item) হলে
+    একবারে সব DOM node বানালে ব্রাউজার
+    freeze/crash করে। তাই এক পেজে মাত্র
+    PAGE_SIZE সংখ্যক item render করা হয়।
+    */
+
+    const totalPages =
+        Math.max(
+            1,
+            Math.ceil(dataset.length / PAGE_SIZE)
+        );
+
+    if(currentPage >= totalPages){
+        currentPage = totalPages - 1;
+    }
+
+    if(currentPage < 0){
+        currentPage = 0;
+    }
+
+    const start =
+        currentPage * PAGE_SIZE;
+
+    const end =
+        Math.min(
+            start + PAGE_SIZE,
+            dataset.length
+        );
+
+
     container.innerHTML = "";
 
-
-    dataset.forEach(
-        (item,index)=>{
-
-            const div =
-                document.createElement(
-                    "div"
-                );
+    const fragment =
+        document.createDocumentFragment();
 
 
-            div.className =
-                "item";
+    for(
+        let index = start;
+        index < end;
+        index++
+    ){
 
+        const item =
+            dataset[index];
 
-            div.innerHTML = `
-
-                <div class="item-top">
-
-                    <span class="item-number">
-                        #${index + 1}
-                    </span>
-
-                    <button
-                        class="danger"
-                        style="padding:6px 9px;font-size:10px"
-                        onclick="removeItem(${index})"
-                    >
-                        Delete
-                    </button>
-
-                </div>
-
-
-                <div class="item-question">
-                    Q: ${escapeHTML(item.question)}
-                </div>
-
-
-                <div class="item-answer">
-                    A: ${escapeHTML(item.answer)}
-                </div>
-
-            `;
-
-
-            container.appendChild(
-                div
+        const div =
+            document.createElement(
+                "div"
             );
 
-        }
+
+        div.className =
+            "item";
+
+
+        div.innerHTML = `
+
+            <div class="item-top">
+
+                <span class="item-number">
+                    #${index + 1}
+                </span>
+
+                <button
+                    class="danger"
+                    style="padding:6px 9px;font-size:10px"
+                    onclick="removeItem(${index})"
+                >
+                    Delete
+                </button>
+
+            </div>
+
+
+            <div class="item-question">
+                Q: ${escapeHTML(item.question)}
+            </div>
+
+
+            <div class="item-answer">
+                A: ${escapeHTML(item.answer)}
+            </div>
+
+        `;
+
+
+        fragment.appendChild(
+            div
+        );
+
+    }
+
+
+    container.appendChild(
+        fragment
     );
+
+
+    if(pager){
+
+        pager.style.display =
+            "flex";
+
+        document.getElementById(
+            "pagerInfo"
+        ).textContent =
+            "Page " +
+            (currentPage + 1) +
+            " / " +
+            totalPages +
+            "  (" +
+            (start + 1) +
+            "–" +
+            end +
+            " of " +
+            dataset.length.toLocaleString() +
+            ")";
+
+        document.getElementById(
+            "pagerPrev"
+        ).disabled =
+            currentPage === 0;
+
+        document.getElementById(
+            "pagerNext"
+        ).disabled =
+            currentPage >= totalPages - 1;
+    }
+}
+
+
+/* =========================================================
+   PAGER NAVIGATION
+========================================================= */
+
+function pagerGoPrev(){
+
+    if(currentPage > 0){
+
+        currentPage--;
+
+        renderDataset();
+
+        document.getElementById(
+            "dataset"
+        ).scrollIntoView({
+            behavior: "smooth",
+            block: "start"
+        });
+    }
+}
+
+
+function pagerGoNext(){
+
+    const totalPages =
+        Math.max(
+            1,
+            Math.ceil(dataset.length / PAGE_SIZE)
+        );
+
+    if(currentPage < totalPages - 1){
+
+        currentPage++;
+
+        renderDataset();
+
+        document.getElementById(
+            "dataset"
+        ).scrollIntoView({
+            behavior: "smooth",
+            block: "start"
+        });
+    }
 }
 
 
@@ -1476,6 +1762,8 @@ function clearData(){
 
 
     dataset = [];
+
+    currentPage = 0;
 
 
     renderDataset();
@@ -2054,6 +2342,8 @@ async function importDAT(event){
 
         dataset =
             validDataset;
+
+        currentPage = 0;
 
 
         renderDataset();
