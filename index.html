@@ -1,45 +1,2331 @@
-<!DOCTYPE html><html lang="bn"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><title>Tuphan AI Large JSON DAT Builder</title><style>
-*{box-sizing:border-box}body{margin:0;background:#050816;color:#fff;font-family:Arial,sans-serif}.wrap{width:94%;max-width:850px;margin:18px auto}.card{background:#0b1330;border:1px solid #ffffff18;border-radius:18px;padding:16px;margin:12px 0;box-shadow:0 15px 45px #0008}h1{margin:0 0 5px;font-size:23px}.sub,.note{color:#a4b0cd;font-size:12px;line-height:1.5}label{display:block;color:#b8c2dc;font-size:12px;margin:10px 0 7px}input[type=text]{width:100%;padding:12px;border-radius:11px;border:1px solid #ffffff18;background:#070d20;color:#fff}.row{display:flex;gap:7px}.row input{flex:1}button{border:0;border-radius:11px;padding:12px 14px;margin:5px 5px 0 0;color:#fff;font-weight:bold;background:linear-gradient(135deg,#087dff,#7137ff)}button.green{background:linear-gradient(135deg,#079b72,#087dff)}button.red{background:#8b2638}button:disabled{opacity:.45}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.stat{background:#070e22;border:1px solid #ffffff10;border-radius:12px;padding:10px}.stat b{display:block;font-size:18px}.stat span{color:#8290b0;font-size:10px}.progress{height:10px;background:#060b19;border-radius:20px;overflow:hidden;margin-top:12px}.bar{height:100%;width:0;background:linear-gradient(90deg,#00d9ff,#7538ff)}.status{font-size:12px;margin-top:8px}.preview{max-height:280px;overflow:auto;background:#060b19;border-radius:11px}.item{padding:10px;border-bottom:1px solid #ffffff0d}.q{font-weight:bold;font-size:13px}.a{font-size:12px;color:#aab5d0;margin-top:4px;white-space:pre-wrap}.badge{font-size:10px;background:#17213e;padding:4px 7px;border-radius:20px;margin-right:4px}@media(max-width:600px){.stats{grid-template-columns:repeat(2,1fr)}.row{flex-direction:column}}
-</style></head><body><main class="wrap">
-<div class="card"><h1>⚡ Tuphan AI DAT Builder</h1><div class="sub">Large JSON Edition — 1–200 MB</div><span class="badge">TBAI1</span><span class="badge">TBAI2 LARGE</span><span class="badge">AES-256-GCM</span></div>
-<div class="card"><label>🔑 AES-256 Key (Base64)</label><div class="row"><input id="key" type="text" placeholder="Generate Key চাপুন"><button id="gen">Generate Key</button></div><button id="save">Save Key TXT</button></div>
-<div class="card"><label>📥 JSON Import</label><input id="json" type="file" accept=".json,application/json"><p class="note">ফাইলটি পুরোটা RAM-এ JSON.parse করা হবে না। 1 MB করে পড়ে object parse করে IndexedDB-তে রাখা হবে।</p><button id="imp" class="green">Import Large JSON</button><button id="clear" class="red">Clear Database</button></div>
-<div class="card"><div class="stats"><div class="stat"><b id="cnt">0</b><span>Records</span></div><div class="stat"><b id="sz">0 B</b><span>File</span></div><div class="stat"><b id="pct">0%</b><span>Progress</span></div><div class="stat"><b id="pc">0</b><span>Preview</span></div></div><div class="progress"><div id="bar" class="bar"></div></div><div id="status" class="status">Ready.</div></div>
-<div class="card"><label>👀 Preview — প্রথম 100টি</label><div id="preview" class="preview"><div class="item note">No data.</div></div></div>
-<div class="card"><label>📤 Export</label><button id="ej">Export JSON</button><button id="ed">Export DAT</button><p class="note">50 MB পর্যন্ত source হলে original-compatible TBAI1। এর বেশি হলে TBAI2 chunked AES-GCM format।</p></div>
-</main><script>
-const DBN="TUPHAN_AI_LARGE",RS="records",MS="meta",READ=1024*1024,MAX=200*1024*1024,CHUNK=1024*1024,LIMIT=50*1024*1024,PRE=100;let db,busy=false,preview=[];
-const $=id=>document.getElementById(id),wait=()=>new Promise(requestAnimationFrame);
-function fmt(n){if(!n)return"0 B";let u=["B","KB","MB","GB"],i=0;while(n>=1024&&i<3)n/=1024,i++;return n.toFixed(i?2:0)+" "+u[i]}
-function b64(a){let s="";for(let i=0;i<a.length;i+=32768)s+=String.fromCharCode(...a.subarray(i,i+32768));return btoa(s)}
-function rawKey(){let r=atob($("key").value.trim()),a=new Uint8Array(r.length);for(let i=0;i<r.length;i++)a[i]=r.charCodeAt(i);if(a.length!==32)throw Error("Key অবশ্যই 32 bytes AES-256 হতে হবে");return a}
-async function aes(){return crypto.subtle.importKey("raw",rawKey(),{name:"AES-GCM"},false,["encrypt","decrypt"])}
-function openDB(){return new Promise((ok,no)=>{let r=indexedDB.open(DBN,1);r.onupgradeneeded=e=>{let d=e.target.result;if(!d.objectStoreNames.contains(RS))d.createObjectStore(RS,{autoIncrement:true});if(!d.objectStoreNames.contains(MS))d.createObjectStore(MS,{keyPath:"k"})};r.onsuccess=()=>{db=r.result;ok()};r.onerror=()=>no(r.error)})}
-function clearDB(){return new Promise((ok,no)=>{let t=db.transaction([RS,MS],"readwrite");t.objectStore(RS).clear();t.objectStore(MS).clear();t.oncomplete=()=>{preview=[];render();stats(0,0,0);ok()};t.onerror=()=>no(t.error)})}
-function meta(k,v){return new Promise((ok,no)=>{let t=db.transaction(MS,"readwrite");t.objectStore(MS).put({k,v});t.oncomplete=ok;t.onerror=()=>no(t.error)})}
-function getMeta(k){return new Promise((ok,no)=>{let r=db.transaction(MS).objectStore(MS).get(k);r.onsuccess=()=>ok(r.result&&r.result.v);r.onerror=()=>no(r.error)})}
-function add(a){return new Promise((ok,no)=>{let t=db.transaction(RS,"readwrite"),s=t.objectStore(RS);a.forEach(x=>s.add(x));t.oncomplete=ok;t.onerror=()=>no(t.error)})}
-function stats(c,s,p){$("cnt").textContent=c.toLocaleString();$("sz").textContent=fmt(s);$("pct").textContent=p.toFixed(1)+"%";$("bar").style.width=p+"%";$("pc").textContent=preview.length}
-function esc(s){return String(s).replace(/[&<>"']/g,x=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[x]))}
-function render(){$("preview").innerHTML=preview.length?preview.map(x=>'<div class="item"><div class="q">'+esc(x.question)+'</div><div class="a">'+esc(x.answer)+'</div></div>').join(""):'<div class="item note">No data.</div>'}
-async function importJSON(file){await clearDB();let dec=new TextDecoder(),carry="",started=false,ended=false,str=false,escp=false,depth=0,start=-1,count=0,batch=[];
-for(let pos=0;pos<file.size;pos+=READ){let end=Math.min(pos+READ,file.size),txt=dec.decode(await file.slice(pos,end).arrayBuffer(),{stream:end<file.size});carry+=txt;let i=0;
-while(i<carry.length){let c=carry[i];if(!started){if(/\s/.test(c)){i++;continue}if(c!=="[")throw Error("JSON অবশ্যই [ দিয়ে শুরু হবে");started=true;i++;continue}if(ended){if(/\s/.test(c)){i++;continue}throw Error("JSON array-এর পরে extra data")}
-if(!depth){if(/\s|,/.test(c)){i++;continue}if(c==="]"){ended=true;i++;continue}if(c==="{"){start=i;depth=1;i++;continue}throw Error("Expected {")}
-if(str){if(escp)escp=false;else if(c==="\\")escp=true;else if(c==='"')str=false}else{if(c==='"')str=true;else if(c==="{")depth++;else if(c==="}"){depth--;if(!depth){let o=JSON.parse(carry.slice(start,i+1));if(typeof o.question!=="string"||typeof o.answer!=="string")throw Error("question ও answer string হতে হবে");let r={question:o.question,answer:o.answer};if(preview.length<PRE)preview.push(r);batch.push(r);count++;if(batch.length>=250){await add(batch);batch=[]}start=-1}}}i++}
-if(depth&&start>=0)carry=carry.slice(start);else carry=carry.slice(i);stats(count,file.size,end/file.size*100);if(count%1000===0) $("status").textContent="Import হচ্ছে… "+count.toLocaleString()+" records";await wait()}
-if(batch.length)await add(batch);if(depth||str||!ended)throw Error("JSON অসম্পূর্ণ বা malformed");await meta("count",count);await meta("size",file.size);render();stats(count,file.size,100);$("status").textContent="✅ Import complete — "+count.toLocaleString()+" records"}
-function each(fn){return new Promise((ok,no)=>{let r=db.transaction(RS).objectStore(RS).openCursor();r.onerror=()=>no(r.error);r.onsuccess=e=>{let c=e.target.result;if(!c)return ok();Promise.resolve(fn(c.value)).then(()=>c.continue()).catch(no)}})}
-async function exportJSON(){let n=Number(await getMeta("count")||0);if(!n)return $("status").textContent="No data";let parts=["["],first=true,i=0;await each(o=>{parts.push((first?"":",")+JSON.stringify(o));first=false;i++;if(i%2000===0)$("status").textContent="JSON export… "+i.toLocaleString()+"/"+n.toLocaleString()});parts.push("]");download(new Blob(parts,{type:"application/json"}),"bot-data.json");$("status").textContent="✅ JSON exported"}
-async function exportDAT(){let k=await aes(),source=Number(await getMeta("size")||0),parts=["["],first=true;await each(o=>{parts.push((first?"":",")+JSON.stringify(o));first=false});parts.push("]");let plain=new TextEncoder().encode(parts.join(""));
-if(source<=LIMIT){let iv=crypto.getRandomValues(new Uint8Array(12)),c=new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM",iv},k,plain)),out=new Uint8Array(17+c.length);out.set(new TextEncoder().encode("TBAI1"));out.set(iv,5);out.set(c,17);download(new Blob([out]),"bot1.dat");$("status").textContent="✅ TBAI1 DAT exported"}
-else{let out=[new TextEncoder().encode("TBAI2")],h=new Uint8Array(4);new DataView(h.buffer).setUint32(0,CHUNK,true);out.push(h);for(let p=0;p<plain.length;p+=CHUNK){let x=plain.slice(p,p+CHUNK),iv=crypto.getRandomValues(new Uint8Array(12)),c=new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM",iv},k,x)),l=new Uint8Array(4);new DataView(l.buffer).setUint32(0,x.length,true);out.push(iv,l,c);$("status").textContent="DAT encrypt… "+((Math.min(p+CHUNK,plain.length)/plain.length)*100).toFixed(1)+"%";await wait()}download(new Blob(out),"bot1-large.dat");$("status").textContent="✅ TBAI2 Large DAT exported"}}
-function download(b,n){let a=document.createElement("a"),u=URL.createObjectURL(b);a.href=u;a.download=n;a.click();setTimeout(()=>URL.revokeObjectURL(u),2000)}
-$("gen").onclick=()=>{$("key").value=b64(crypto.getRandomValues(new Uint8Array(32)));$("status").textContent="✅ AES-256 key generated"};
-$("save").onclick=()=>{let k=$("key").value.trim();if(k)download(new Blob([k],{type:"text/plain"}),"aes-256-key.txt")};
-$("clear").onclick=async()=>{if(!busy){await clearDB();$("status").textContent="Database cleared"}};
-$("imp").onclick=async()=>{let f=$("json").files[0];if(!f)return $("status").textContent="JSON file নির্বাচন করুন";if(f.size>MAX)return $("status").textContent="❌ সর্বোচ্চ 200 MB";busy=true;$("imp").disabled=true;try{await importJSON(f)}catch(e){$("status").textContent="❌ "+e.message}finally{busy=false;$("imp").disabled=false}};
-$("ej").onclick=async()=>{if(!busy){busy=true;try{await exportJSON()}catch(e){$("status").textContent="❌ "+e.message}finally{busy=false}}};
-$("ed").onclick=async()=>{if(!busy){busy=true;try{await exportDAT()}catch(e){$("status").textContent="❌ "+e.message}finally{busy=false}}};
-openDB().then(async()=>{let c=Number(await getMeta("count")||0),s=Number(await getMeta("size")||0);stats(c,s,c?100:0);$("status").textContent=c?"Ready — "+c.toLocaleString()+" records":"Ready"}).catch(e=>$("status").textContent="DB error: "+e.message);
-</script></body></html>
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+
+<meta
+    name="viewport"
+    content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"
+>
+
+<meta name="theme-color" content="#060a18">
+
+<title>Tuphan AI DAT Studio</title>
+
+<style>
+*{
+    box-sizing:border-box;
+    -webkit-tap-highlight-color:transparent;
+}
+
+html,body{
+    width:100%;
+    height:100%;
+    margin:0;
+    padding:0;
+    overflow:hidden;
+    font-family:Arial,Helvetica,sans-serif;
+    color:#ffffff;
+    background:#050816;
+}
+
+/* =========================
+   ANIMATED BACKGROUND
+========================= */
+
+.bg{
+    position:fixed;
+    inset:0;
+    overflow:hidden;
+    z-index:-10;
+    background:
+        radial-gradient(
+            circle at 15% 15%,
+            rgba(0,210,255,.25),
+            transparent 30%
+        ),
+        radial-gradient(
+            circle at 85% 20%,
+            rgba(110,70,255,.22),
+            transparent 32%
+        ),
+        radial-gradient(
+            circle at 50% 90%,
+            rgba(0,255,160,.18),
+            transparent 30%
+        ),
+        #050816;
+}
+
+.orb{
+    position:absolute;
+    width:260px;
+    height:260px;
+    border-radius:50%;
+    filter:blur(70px);
+    opacity:.5;
+    animation-duration:12s;
+    animation-timing-function:ease-in-out;
+    animation-iteration-count:infinite;
+    animation-direction:alternate;
+}
+
+.orb1{
+    left:-80px;
+    top:40px;
+    background:#00d9ff;
+    animation-name:move1;
+}
+
+.orb2{
+    right:-80px;
+    top:170px;
+    background:#765cff;
+    animation-name:move2;
+}
+
+.orb3{
+    left:35%;
+    bottom:-120px;
+    background:#00ff9d;
+    animation-name:move3;
+}
+
+@keyframes move1{
+    from{
+        transform:translate3d(0,0,0);
+    }
+    to{
+        transform:translate3d(120px,90px,0);
+    }
+}
+
+@keyframes move2{
+    from{
+        transform:translate3d(0,0,0);
+    }
+    to{
+        transform:translate3d(-120px,100px,0);
+    }
+}
+
+@keyframes move3{
+    from{
+        transform:translate3d(0,0,0);
+    }
+    to{
+        transform:translate3d(100px,-100px,0);
+    }
+}
+
+/* =========================
+   APP
+========================= */
+
+.app{
+    width:100%;
+    height:100%;
+    display:flex;
+    flex-direction:column;
+}
+
+.header{
+    flex-shrink:0;
+    padding:15px 16px 13px;
+    background:rgba(5,8,22,.72);
+    border-bottom:1px solid rgba(255,255,255,.08);
+    backdrop-filter:blur(18px);
+    -webkit-backdrop-filter:blur(18px);
+}
+
+.brand{
+    display:flex;
+    align-items:center;
+    gap:12px;
+}
+
+.logo{
+    width:46px;
+    height:46px;
+    flex-shrink:0;
+    border-radius:15px;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+
+    font-size:22px;
+    font-weight:900;
+
+    background:
+        linear-gradient(
+            135deg,
+            #00d9ff,
+            #7057ff
+        );
+
+    box-shadow:
+        0 0 25px rgba(0,210,255,.28);
+}
+
+.title{
+    font-size:19px;
+    font-weight:900;
+    letter-spacing:.1px;
+}
+
+.subtitle{
+    margin-top:3px;
+    color:#8998b7;
+    font-size:11px;
+}
+
+.content{
+    flex:1;
+    overflow-y:auto;
+    overflow-x:hidden;
+
+    padding:14px;
+    padding-bottom:30px;
+
+    overscroll-behavior:contain;
+}
+
+.content::-webkit-scrollbar{
+    width:4px;
+}
+
+.content::-webkit-scrollbar-thumb{
+    background:#263454;
+    border-radius:10px;
+}
+
+/* =========================
+   CARD
+========================= */
+
+.card{
+    margin-bottom:14px;
+    padding:16px;
+
+    border-radius:20px;
+
+    background:
+        rgba(10,17,38,.76);
+
+    border:
+        1px solid rgba(255,255,255,.08);
+
+    box-shadow:
+        0 16px 45px rgba(0,0,0,.18);
+
+    backdrop-filter:blur(16px);
+    -webkit-backdrop-filter:blur(16px);
+}
+
+.card-title{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+
+    margin-bottom:12px;
+
+    font-size:15px;
+    font-weight:900;
+}
+
+.badge{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+
+    padding:5px 8px;
+
+    border-radius:8px;
+
+    background:rgba(0,210,255,.10);
+    color:#55ddff;
+
+    font-size:9px;
+    white-space:nowrap;
+}
+
+/* =========================
+   INPUT
+========================= */
+
+label{
+    display:block;
+
+    margin:10px 0 6px;
+
+    color:#98a5bf;
+    font-size:11px;
+    font-weight:700;
+}
+
+input,
+textarea{
+    width:100%;
+
+    border:none;
+    outline:none;
+
+    color:#ffffff;
+
+    background:#080e21;
+
+    border:
+        1px solid #202b48;
+
+    border-radius:12px;
+
+    padding:13px;
+
+    font-size:13px;
+
+    transition:
+        border-color .2s,
+        box-shadow .2s;
+}
+
+input::placeholder,
+textarea::placeholder{
+    color:#53617c;
+}
+
+input:focus,
+textarea:focus{
+    border-color:#00cfff;
+
+    box-shadow:
+        0 0 0 3px rgba(0,207,255,.08);
+}
+
+textarea{
+    min-height:105px;
+    resize:vertical;
+}
+
+/* =========================
+   BUTTON
+========================= */
+
+button{
+    border:none;
+    outline:none;
+
+    color:#ffffff;
+
+    background:#17213a;
+
+    border-radius:12px;
+
+    padding:12px 13px;
+
+    font-size:12px;
+    font-weight:800;
+
+    cursor:pointer;
+
+    transition:
+        transform .15s,
+        filter .15s,
+        opacity .15s;
+}
+
+button:active{
+    transform:scale(.96);
+}
+
+button:hover{
+    filter:brightness(1.12);
+}
+
+.primary{
+    background:
+        linear-gradient(
+            135deg,
+            #00bce8,
+            #6755ff
+        );
+
+    box-shadow:
+        0 9px 25px rgba(0,180,255,.16);
+}
+
+.success{
+    background:
+        linear-gradient(
+            135deg,
+            #00b879,
+            #008f69
+        );
+}
+
+.secondary{
+    background:#151f38;
+}
+
+.danger{
+    background:#421c2b;
+    color:#ff9db4;
+}
+
+.full{
+    width:100%;
+}
+
+.button-row{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:9px;
+}
+
+.button-row-3{
+    display:grid;
+    grid-template-columns:1fr 1fr 1fr;
+    gap:8px;
+}
+
+.key-row{
+    display:flex;
+    gap:8px;
+}
+
+.key-row input{
+    min-width:0;
+    flex:1;
+}
+
+/* =========================
+   INFO
+========================= */
+
+.info{
+    margin-top:8px;
+
+    color:#74839f;
+
+    font-size:10px;
+    line-height:1.6;
+}
+
+/* =========================
+   DATASET
+========================= */
+
+.dataset{
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+}
+
+.item{
+    padding:12px;
+
+    background:#080e21;
+
+    border:
+        1px solid #1c2741;
+
+    border-radius:14px;
+}
+
+.item-top{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+}
+
+.item-number{
+    color:#42ddff;
+    font-size:11px;
+    font-weight:900;
+}
+
+.item-question{
+    margin-top:7px;
+
+    font-size:13px;
+    font-weight:800;
+
+    line-height:1.45;
+    word-break:break-word;
+}
+
+.item-answer{
+    margin-top:6px;
+
+    color:#99a7c0;
+
+    font-size:12px;
+
+    line-height:1.55;
+
+    word-break:break-word;
+}
+
+.empty{
+    padding:22px 10px;
+
+    text-align:center;
+
+    color:#61708a;
+
+    font-size:12px;
+
+    line-height:1.6;
+}
+
+/* =========================
+   STATUS
+========================= */
+
+.status{
+    display:none;
+
+    margin-top:10px;
+
+    padding:10px 12px;
+
+    border-radius:11px;
+
+    background:#080e21;
+
+    font-size:11px;
+
+    line-height:1.5;
+}
+
+.status.show{
+    display:block;
+}
+
+.status.ok{
+    color:#62ffc8;
+    border:
+        1px solid rgba(0,255,170,.14);
+}
+
+.status.err{
+    color:#ff829e;
+    border:
+        1px solid rgba(255,70,110,.15);
+}
+
+/* =========================
+   FOOTER
+========================= */
+
+.footer{
+    text-align:center;
+
+    color:#4f5c75;
+
+    font-size:9px;
+
+    padding:
+        2px 0 14px;
+}
+</style>
+</head>
+
+<body>
+
+<!-- =========================
+     BACKGROUND
+========================= -->
+
+<div class="bg">
+    <div class="orb orb1"></div>
+    <div class="orb orb2"></div>
+    <div class="orb orb3"></div>
+</div>
+
+
+<!-- =========================
+     APP
+========================= -->
+
+<div class="app">
+
+    <!-- HEADER -->
+    <header class="header">
+
+        <div class="brand">
+
+            <div class="logo">
+                T
+            </div>
+
+            <div>
+
+                <div class="title">
+                    Tuphan AI DAT Studio
+                </div>
+
+                <div class="subtitle">
+                    Offline Encrypted Dataset Builder
+                </div>
+
+            </div>
+
+        </div>
+
+    </header>
+
+
+    <!-- CONTENT -->
+    <main class="content">
+
+
+        <!-- =================================================
+             KEY SECTION
+        ================================================== -->
+
+        <section class="card">
+
+            <div class="card-title">
+
+                <span>
+                    🔐 Encryption Key
+                </span>
+
+                <span class="badge">
+                    AES-256-GCM
+                </span>
+
+            </div>
+
+
+            <label>
+                32-byte Base64 Key
+            </label>
+
+
+            <div class="key-row">
+
+                <input
+                    id="keyInput"
+                    type="password"
+                    placeholder="Generate অথবা নিজের 32-byte Base64 key দিন"
+                    autocomplete="off"
+                    spellcheck="false"
+                >
+
+                <button
+                    class="primary"
+                    onclick="generateKey()"
+                >
+                    Generate
+                </button>
+
+            </div>
+
+
+            <div
+                class="button-row"
+                style="margin-top:9px"
+            >
+
+                <button
+                    class="secondary"
+                    onclick="copyKey()"
+                >
+                    📋 Copy Key
+                </button>
+
+
+                <button
+                    class="secondary"
+                    onclick="toggleKey()"
+                >
+                    👁 Show / Hide
+                </button>
+
+            </div>
+
+
+            <div class="info">
+
+                AES-256-এর জন্য Key অবশ্যই 32 bytes হতে হবে।
+                Key নিরাপদে সংরক্ষণ করো।
+
+            </div>
+
+        </section>
+
+
+
+        <!-- =================================================
+             JSON IMPORT
+        ================================================== -->
+
+        <section class="card">
+
+            <div class="card-title">
+
+                <span>
+                    📂 Import JSON
+                </span>
+
+                <span class="badge">
+                    DATASET
+                </span>
+
+            </div>
+
+
+            <button
+                class="primary full"
+                onclick="openJSONPicker()"
+            >
+                📂 Import JSON Dataset
+            </button>
+
+
+            <input
+                id="jsonFile"
+                type="file"
+                accept=".json,application/json"
+                style="display:none"
+                onchange="importJSON(event)"
+            >
+
+
+            <div class="info">
+
+                JSON format:
+                <br>
+                [
+                { "question": "...", "answer": "..." }
+                ]
+
+            </div>
+
+        </section>
+
+
+
+        <!-- =================================================
+             ADD QUESTION
+        ================================================== -->
+
+        <section class="card">
+
+            <div class="card-title">
+
+                <span>
+                    🤖 Add Knowledge
+                </span>
+
+            </div>
+
+
+            <label>
+                Question
+            </label>
+
+            <input
+                id="question"
+                type="text"
+                placeholder="যেমন: হ্যালো"
+                autocomplete="off"
+            >
+
+
+            <label>
+                Answer
+            </label>
+
+            <textarea
+                id="answer"
+                placeholder="যেমন: হ্যালো! আমি Tuphan AI।"
+            ></textarea>
+
+
+            <button
+                class="success full"
+                style="margin-top:10px"
+                onclick="addItem()"
+            >
+                ＋ Add Question & Answer
+            </button>
+
+        </section>
+
+
+
+        <!-- =================================================
+             DATASET
+        ================================================== -->
+
+        <section class="card">
+
+            <div class="card-title">
+
+                <span>
+                    📚 Dataset
+                </span>
+
+                <span
+                    id="countBadge"
+                    class="badge"
+                >
+                    0 items
+                </span>
+
+            </div>
+
+
+            <div
+                id="dataset"
+                class="dataset"
+            ></div>
+
+
+            <div
+                class="button-row"
+                style="margin-top:10px"
+            >
+
+                <button
+                    class="secondary"
+                    onclick="exportJSON()"
+                >
+                    📄 Export JSON
+                </button>
+
+
+                <button
+                    class="danger"
+                    onclick="clearData()"
+                >
+                    🗑 Clear All
+                </button>
+
+            </div>
+
+        </section>
+
+
+
+        <!-- =================================================
+             DAT EXPORT / IMPORT
+        ================================================== -->
+
+        <section class="card">
+
+            <div class="card-title">
+
+                <span>
+                    📦 DAT File
+                </span>
+
+                <span class="badge">
+                    TBAI1
+                </span>
+
+            </div>
+
+
+            <label>
+                File Name
+            </label>
+
+
+            <input
+                id="fileName"
+                type="text"
+                value="bot1.dat"
+                autocomplete="off"
+            >
+
+
+            <button
+                class="primary full"
+                style="margin-top:10px"
+                onclick="exportDAT()"
+            >
+                🔐 Encrypt & Export DAT
+            </button>
+
+
+            <button
+                class="secondary full"
+                style="margin-top:9px"
+                onclick="openDATPicker()"
+            >
+                📂 Import DAT & Decrypt
+            </button>
+
+
+            <input
+                id="datFile"
+                type="file"
+                accept=".dat,application/octet-stream"
+                style="display:none"
+                onchange="importDAT(event)"
+            >
+
+
+            <div class="info">
+
+                DAT format:
+                <br>
+                TBAI1 + 12-byte IV + AES-256-GCM Ciphertext + Auth Tag
+
+            </div>
+
+
+            <div
+                id="status"
+                class="status"
+            ></div>
+
+        </section>
+
+
+
+        <div class="footer">
+            Tuphan AI DAT Studio • Offline • Web Crypto API
+        </div>
+
+
+    </main>
+
+</div>
+
+
+
+<script>
+"use strict";
+
+/*
+===========================================================
+ TUPHAN AI DAT FORMAT
+===========================================================
+
+HEADER:
+    TBAI1
+
+THEN:
+    12-byte random IV
+
+THEN:
+    AES-256-GCM encrypted JSON
+
+WEB CRYPTO AES-GCM:
+    Ciphertext + 16-byte Authentication Tag
+
+FINAL BINARY:
+    [T][B][A][I][1]
+    [12 BYTE IV]
+    [ENCRYPTED JSON + 16 BYTE TAG]
+
+===========================================================
+*/
+
+
+/* =========================================================
+   GLOBAL DATA
+========================================================= */
+
+const MAGIC = new TextEncoder().encode("TBAI1");
+
+let dataset = [];
+
+
+/* =========================================================
+   BYTE → BASE64
+========================================================= */
+
+function bytesToBase64(bytes){
+
+    let binary = "";
+
+    const chunkSize = 0x8000;
+
+    for(
+        let i = 0;
+        i < bytes.length;
+        i += chunkSize
+    ){
+
+        const chunk =
+            bytes.subarray(
+                i,
+                i + chunkSize
+            );
+
+        binary += String.fromCharCode(
+            ...chunk
+        );
+    }
+
+    return btoa(binary);
+}
+
+
+/* =========================================================
+   BASE64 → BYTE
+========================================================= */
+
+function base64ToBytes(base64){
+
+    const clean =
+        base64
+            .trim()
+            .replace(/\s+/g,"");
+
+    const binary =
+        atob(clean);
+
+    const bytes =
+        new Uint8Array(
+            binary.length
+        );
+
+    for(
+        let i = 0;
+        i < binary.length;
+        i++
+    ){
+
+        bytes[i] =
+            binary.charCodeAt(i);
+
+    }
+
+    return bytes;
+}
+
+
+/* =========================================================
+   GENERATE RANDOM AES-256 KEY
+========================================================= */
+
+function generateKey(){
+
+    const randomBytes =
+        crypto.getRandomValues(
+            new Uint8Array(32)
+        );
+
+    const key =
+        bytesToBase64(
+            randomBytes
+        );
+
+    const input =
+        document.getElementById(
+            "keyInput"
+        );
+
+    input.value = key;
+
+    input.type = "text";
+
+    showStatus(
+        "নতুন AES-256 Key তৈরি হয়েছে।",
+        true
+    );
+}
+
+
+/* =========================================================
+   GET + VALIDATE KEY
+========================================================= */
+
+function getKeyBytes(){
+
+    const value =
+        document
+            .getElementById("keyInput")
+            .value
+            .trim();
+
+    if(!value){
+
+        throw new Error(
+            "Encryption Key দিন।"
+        );
+
+    }
+
+    let bytes;
+
+    try{
+
+        bytes =
+            base64ToBytes(value);
+
+    }
+    catch(error){
+
+        throw new Error(
+            "Key valid Base64 নয়।"
+        );
+
+    }
+
+
+    if(bytes.length !== 32){
+
+        throw new Error(
+            "AES-256 Key অবশ্যই 32 bytes হতে হবে।"
+        );
+
+    }
+
+    return bytes;
+}
+
+
+/* =========================================================
+   IMPORT AES KEY
+========================================================= */
+
+async function importAESKey(){
+
+    const keyBytes =
+        getKeyBytes();
+
+    return await crypto.subtle.importKey(
+        "raw",
+
+        keyBytes,
+
+        {
+            name:"AES-GCM"
+        },
+
+        false,
+
+        [
+            "encrypt",
+            "decrypt"
+        ]
+    );
+}
+
+
+/* =========================================================
+   ADD DATASET ITEM
+========================================================= */
+
+function addItem(){
+
+    const question =
+        document
+            .getElementById("question")
+            .value
+            .trim();
+
+    const answer =
+        document
+            .getElementById("answer")
+            .value
+            .trim();
+
+
+    if(!question){
+
+        alert(
+            "Question লিখুন।"
+        );
+
+        return;
+    }
+
+
+    if(!answer){
+
+        alert(
+            "Answer লিখুন।"
+        );
+
+        return;
+    }
+
+
+    dataset.push({
+
+        question: question,
+
+        answer: answer
+
+    });
+
+
+    document.getElementById(
+        "question"
+    ).value = "";
+
+
+    document.getElementById(
+        "answer"
+    ).value = "";
+
+
+    renderDataset();
+
+
+    showStatus(
+        "Question & Answer যোগ হয়েছে।",
+        true
+    );
+}
+
+
+/* =========================================================
+   IMPORT JSON
+========================================================= */
+
+async function importJSON(event){
+
+    const file =
+        event.target.files[0];
+
+    if(!file){
+
+        return;
+
+    }
+
+
+    try{
+
+        const text =
+            await file.text();
+
+
+        const parsed =
+            JSON.parse(text);
+
+
+        if(!Array.isArray(parsed)){
+
+            throw new Error(
+                "JSON-এর root অবশ্যই Array হতে হবে।"
+            );
+
+        }
+
+
+        const imported = [];
+
+
+        for(
+            let i = 0;
+            i < parsed.length;
+            i++
+        ){
+
+            const item =
+                parsed[i];
+
+
+            if(
+                typeof item !== "object" ||
+                item === null
+            ){
+
+                continue;
+
+            }
+
+
+            const question =
+                typeof item.question === "string"
+                    ? item.question.trim()
+                    : "";
+
+
+            const answer =
+                typeof item.answer === "string"
+                    ? item.answer.trim()
+                    : "";
+
+
+            if(
+                question &&
+                answer
+            ){
+
+                imported.push({
+
+                    question: question,
+
+                    answer: answer
+
+                });
+
+            }
+
+        }
+
+
+        if(imported.length === 0){
+
+            throw new Error(
+                "Valid question/answer পাওয়া যায়নি।"
+            );
+
+        }
+
+
+        /*
+        Existing data-এর সাথে merge
+        */
+
+        dataset =
+            dataset.concat(
+                imported
+            );
+
+
+        renderDataset();
+
+
+        showStatus(
+            imported.length +
+            "টি Q&A JSON থেকে import হয়েছে।",
+            true
+        );
+
+    }
+    catch(error){
+
+        showStatus(
+            "JSON Import ব্যর্থ: " +
+            error.message,
+            false
+        );
+
+    }
+
+
+    event.target.value = "";
+}
+
+
+/* =========================================================
+   OPEN JSON PICKER
+========================================================= */
+
+function openJSONPicker(){
+
+    document
+        .getElementById("jsonFile")
+        .click();
+
+}
+
+
+/* =========================================================
+   RENDER DATASET
+========================================================= */
+
+function renderDataset(){
+
+    const container =
+        document.getElementById(
+            "dataset"
+        );
+
+
+    const badge =
+        document.getElementById(
+            "countBadge"
+        );
+
+
+    badge.textContent =
+        dataset.length +
+        " items";
+
+
+    if(dataset.length === 0){
+
+        container.innerHTML = `
+            <div class="empty">
+                কোনো dataset নেই।<br>
+                JSON import করুন অথবা নিচে Q&A যোগ করুন।
+            </div>
+        `;
+
+        return;
+    }
+
+
+    container.innerHTML = "";
+
+
+    dataset.forEach(
+        (item,index)=>{
+
+            const div =
+                document.createElement(
+                    "div"
+                );
+
+
+            div.className =
+                "item";
+
+
+            div.innerHTML = `
+
+                <div class="item-top">
+
+                    <span class="item-number">
+                        #${index + 1}
+                    </span>
+
+                    <button
+                        class="danger"
+                        style="padding:6px 9px;font-size:10px"
+                        onclick="removeItem(${index})"
+                    >
+                        Delete
+                    </button>
+
+                </div>
+
+
+                <div class="item-question">
+                    Q: ${escapeHTML(item.question)}
+                </div>
+
+
+                <div class="item-answer">
+                    A: ${escapeHTML(item.answer)}
+                </div>
+
+            `;
+
+
+            container.appendChild(
+                div
+            );
+
+        }
+    );
+}
+
+
+/* =========================================================
+   REMOVE ITEM
+========================================================= */
+
+function removeItem(index){
+
+    if(
+        index < 0 ||
+        index >= dataset.length
+    ){
+
+        return;
+
+    }
+
+
+    dataset.splice(
+        index,
+        1
+    );
+
+
+    renderDataset();
+
+
+    showStatus(
+        "Item delete হয়েছে।",
+        true
+    );
+}
+
+
+/* =========================================================
+   CLEAR DATASET
+========================================================= */
+
+function clearData(){
+
+    if(dataset.length === 0){
+
+        return;
+
+    }
+
+
+    const ok =
+        confirm(
+            "সব Question & Answer মুছে ফেলবেন?"
+        );
+
+
+    if(!ok){
+
+        return;
+
+    }
+
+
+    dataset = [];
+
+
+    renderDataset();
+
+
+    showStatus(
+        "Dataset পরিষ্কার করা হয়েছে।",
+        true
+    );
+}
+
+
+/* =========================================================
+   ESCAPE HTML
+========================================================= */
+
+function escapeHTML(value){
+
+    return String(value)
+
+        .replaceAll(
+            "&",
+            "&amp;"
+        )
+
+        .replaceAll(
+            "<",
+            "&lt;"
+        )
+
+        .replaceAll(
+            ">",
+            "&gt;"
+        )
+
+        .replaceAll(
+            '"',
+            "&quot;"
+        )
+
+        .replaceAll(
+            "'",
+            "&#039;"
+        );
+}
+
+
+/* =========================================================
+   CREATE JSON STRING
+========================================================= */
+
+function createJSON(){
+
+    return JSON.stringify(
+        dataset,
+        null,
+        2
+    );
+}
+
+
+/* =========================================================
+   EXPORT JSON
+========================================================= */
+
+function exportJSON(){
+
+    if(dataset.length === 0){
+
+        alert(
+            "Dataset খালি।"
+        );
+
+        return;
+    }
+
+
+    const json =
+        createJSON();
+
+
+    const blob =
+        new Blob(
+            [
+                json
+            ],
+            {
+                type:"application/json"
+            }
+        );
+
+
+    downloadBlob(
+        blob,
+        "bot1.json"
+    );
+
+
+    showStatus(
+        "JSON export সফল হয়েছে।",
+        true
+    );
+}
+
+
+/* =========================================================
+   AES-256-GCM ENCRYPT
+========================================================= */
+
+async function encryptData(){
+
+    const key =
+        await importAESKey();
+
+
+    /*
+      Random 12-byte IV
+    */
+
+    const iv =
+        crypto.getRandomValues(
+            new Uint8Array(12)
+        );
+
+
+    /*
+      JSON → UTF-8 bytes
+    */
+
+    const plaintext =
+        new TextEncoder().encode(
+            createJSON()
+        );
+
+
+    /*
+      AES-GCM encrypt
+      tagLength = 128 bit = 16 bytes
+    */
+
+    const encryptedBuffer =
+        await crypto.subtle.encrypt(
+
+            {
+                name:"AES-GCM",
+
+                iv:iv,
+
+                tagLength:128
+
+            },
+
+            key,
+
+            plaintext
+
+        );
+
+
+    const encrypted =
+        new Uint8Array(
+            encryptedBuffer
+        );
+
+
+    /*
+      Final output:
+
+      TBAI1
+      + IV
+      + ciphertext
+      + 16-byte GCM tag
+    */
+
+
+    const output =
+        new Uint8Array(
+
+            MAGIC.length +
+            iv.length +
+            encrypted.length
+
+        );
+
+
+    let offset = 0;
+
+
+    output.set(
+        MAGIC,
+        offset
+    );
+
+
+    offset +=
+        MAGIC.length;
+
+
+    output.set(
+        iv,
+        offset
+    );
+
+
+    offset +=
+        iv.length;
+
+
+    output.set(
+        encrypted,
+        offset
+    );
+
+
+    return output;
+}
+
+
+/* =========================================================
+   EXPORT DAT
+========================================================= */
+
+async function exportDAT(){
+
+    try{
+
+        if(dataset.length === 0){
+
+            throw new Error(
+                "Dataset খালি। আগে Q&A যোগ করুন বা JSON Import করুন।"
+            );
+
+        }
+
+
+        /*
+          Key validation
+        */
+
+        getKeyBytes();
+
+
+        /*
+          Encrypt
+        */
+
+        const data =
+            await encryptData();
+
+
+        /*
+          Filename
+        */
+
+        let filename =
+            document
+                .getElementById(
+                    "fileName"
+                )
+                .value
+                .trim();
+
+
+        if(!filename){
+
+            filename =
+                "bot1.dat";
+
+        }
+
+
+        if(
+            !filename
+                .toLowerCase()
+                .endsWith(".dat")
+        ){
+
+            filename += ".dat";
+
+        }
+
+
+        /*
+          Binary Blob
+        */
+
+        const blob =
+            new Blob(
+                [
+                    data
+                ],
+                {
+                    type:
+                        "application/octet-stream"
+                }
+            );
+
+
+        downloadBlob(
+            blob,
+            filename
+        );
+
+
+        showStatus(
+            "Encrypted DAT export সফল হয়েছে।",
+            true
+        );
+
+    }
+    catch(error){
+
+        showStatus(
+            "DAT Export ব্যর্থ: " +
+            error.message,
+            false
+        );
+
+    }
+}
+
+
+/* =========================================================
+   OPEN DAT PICKER
+========================================================= */
+
+function openDATPicker(){
+
+    document
+        .getElementById(
+            "datFile"
+        )
+        .click();
+
+}
+
+
+/* =========================================================
+   IMPORT DAT
+========================================================= */
+
+async function importDAT(event){
+
+    const file =
+        event.target.files[0];
+
+
+    if(!file){
+
+        return;
+
+    }
+
+
+    try{
+
+        /*
+          Check Key
+        */
+
+        getKeyBytes();
+
+
+        /*
+          Read binary
+        */
+
+        const buffer =
+            new Uint8Array(
+                await file.arrayBuffer()
+            );
+
+
+        /*
+          Minimum:
+
+          5 byte MAGIC
+          12 byte IV
+          16 byte GCM TAG
+        */
+
+        if(
+            buffer.length <
+            (
+                MAGIC.length +
+                12 +
+                16
+            )
+        ){
+
+            throw new Error(
+                "DAT file খুব ছোট অথবা invalid।"
+            );
+
+        }
+
+
+        /*
+          Verify TBAI1
+        */
+
+        for(
+            let i = 0;
+            i < MAGIC.length;
+            i++
+        ){
+
+            if(
+                buffer[i] !==
+                MAGIC[i]
+            ){
+
+                throw new Error(
+                    "Invalid TBAI1 DAT file।"
+                );
+
+            }
+
+        }
+
+
+        /*
+          Extract IV
+        */
+
+        const iv =
+            buffer.slice(
+                MAGIC.length,
+                MAGIC.length + 12
+            );
+
+
+        /*
+          Extract ciphertext + tag
+        */
+
+        const encrypted =
+            buffer.slice(
+                MAGIC.length + 12
+            );
+
+
+        /*
+          Import AES key
+        */
+
+        const key =
+            await importAESKey();
+
+
+        /*
+          Decrypt
+        */
+
+        const decryptedBuffer =
+            await crypto.subtle.decrypt(
+
+                {
+                    name:"AES-GCM",
+
+                    iv:iv,
+
+                    tagLength:128
+
+                },
+
+                key,
+
+                encrypted
+
+            );
+
+
+        /*
+          UTF-8 → string
+        */
+
+        const text =
+            new TextDecoder().decode(
+                decryptedBuffer
+            );
+
+
+        /*
+          JSON parse
+        */
+
+        const parsed =
+            JSON.parse(
+                text
+            );
+
+
+        if(
+            !Array.isArray(parsed)
+        ){
+
+            throw new Error(
+                "Decrypted data valid dataset Array নয়।"
+            );
+
+        }
+
+
+        /*
+          Validate imported data
+        */
+
+        const validDataset = [];
+
+
+        for(
+            let i = 0;
+            i < parsed.length;
+            i++
+        ){
+
+            const item =
+                parsed[i];
+
+
+            if(
+                typeof item !== "object" ||
+                item === null
+            ){
+
+                continue;
+
+            }
+
+
+            const question =
+                typeof item.question === "string"
+                    ? item.question.trim()
+                    : "";
+
+
+            const answer =
+                typeof item.answer === "string"
+                    ? item.answer.trim()
+                    : "";
+
+
+            if(
+                question &&
+                answer
+            ){
+
+                validDataset.push({
+
+                    question:question,
+
+                    answer:answer
+
+                });
+
+            }
+
+        }
+
+
+        if(
+            validDataset.length === 0
+        ){
+
+            throw new Error(
+                "DAT decrypt হয়েছে, কিন্তু valid Q&A পাওয়া যায়নি।"
+            );
+
+        }
+
+
+        /*
+          Replace current dataset
+        */
+
+        dataset =
+            validDataset;
+
+
+        renderDataset();
+
+
+        showStatus(
+            "DAT decrypt সফল! " +
+            dataset.length +
+            "টি Q&A পাওয়া গেছে।",
+            true
+        );
+
+    }
+    catch(error){
+
+        /*
+          Wrong Key হলে AES-GCM সাধারণত
+          OperationError দেয়
+        */
+
+        showStatus(
+            "DAT Decrypt ব্যর্থ। Key ভুল হতে পারে অথবা DAT corrupt।",
+            false
+        );
+
+        console.error(
+            "DAT decrypt error:",
+            error
+        );
+
+    }
+
+
+    /*
+      Reset input
+      একই file আবার select করা যাবে
+    */
+
+    event.target.value = "";
+}
+
+
+/* =========================================================
+   DOWNLOAD BLOB
+========================================================= */
+
+function downloadBlob(
+    blob,
+    filename
+){
+
+    const url =
+        URL.createObjectURL(
+            blob
+        );
+
+
+    const a =
+        document.createElement(
+            "a"
+        );
+
+
+    a.href = url;
+
+    a.download =
+        filename;
+
+
+    document.body.appendChild(
+        a
+    );
+
+
+    a.click();
+
+
+    a.remove();
+
+
+    setTimeout(
+        ()=>{
+            URL.revokeObjectURL(
+                url
+            );
+        },
+        1000
+    );
+}
+
+
+/* =========================================================
+   COPY KEY
+========================================================= */
+
+async function copyKey(){
+
+    const input =
+        document.getElementById(
+            "keyInput"
+        );
+
+
+    const value =
+        input.value.trim();
+
+
+    if(!value){
+
+        alert(
+            "আগে Key Generate করুন।"
+        );
+
+        return;
+
+    }
+
+
+    try{
+
+        await navigator.clipboard.writeText(
+            value
+        );
+
+
+        showStatus(
+            "Key clipboard-এ copy হয়েছে।",
+            true
+        );
+
+    }
+    catch(error){
+
+        /*
+          Fallback
+        */
+
+        input.type = "text";
+
+        input.select();
+
+        document.execCommand(
+            "copy"
+        );
+
+        showStatus(
+            "Key copy হয়েছে।",
+            true
+        );
+
+    }
+}
+
+
+/* =========================================================
+   SHOW / HIDE KEY
+========================================================= */
+
+function toggleKey(){
+
+    const input =
+        document.getElementById(
+            "keyInput"
+        );
+
+
+    if(
+        input.type === "password"
+    ){
+
+        input.type = "text";
+
+    }
+    else{
+
+        input.type = "password";
+
+    }
+}
+
+
+/* =========================================================
+   STATUS MESSAGE
+========================================================= */
+
+let statusTimer = null;
+
+function showStatus(
+    message,
+    success
+){
+
+    const box =
+        document.getElementById(
+            "status"
+        );
+
+
+    box.textContent =
+        message;
+
+
+    box.className =
+        "status show " +
+        (
+            success
+                ? "ok"
+                : "err"
+        );
+
+
+    clearTimeout(
+        statusTimer
+    );
+
+
+    statusTimer =
+        setTimeout(
+            ()=>{
+
+                box.classList.remove(
+                    "show"
+                );
+
+            },
+            5000
+        );
+}
+
+
+/* =========================================================
+   KEYBOARD SHORTCUT
+========================================================= */
+
+document.addEventListener(
+    "keydown",
+    function(event){
+
+        /*
+          Ctrl + Enter
+          Add Q&A
+        */
+
+        if(
+            event.ctrlKey &&
+            event.key === "Enter"
+        ){
+
+            event.preventDefault();
+
+            addItem();
+
+        }
+
+    }
+);
+
+
+/* =========================================================
+   INITIALIZE
+========================================================= */
+
+renderDataset();
+
+/*
+  প্রথমবার app open হলে
+  automatic নতুন key generate
+*/
+
+generateKey();
+
+</script>
+
+</body>
+</html>
